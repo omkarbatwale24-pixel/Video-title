@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shorts Title Generator</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:820px;margin:24px auto;padding:0 16px;background:#111;color:#eee}
+  input,textarea,button,select{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid #444;background:#1c1c1c;color:#eee}
+  button{cursor:pointer;background:#2d6cdf;border:none}
+  button.sec{background:#333}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .row{display:flex;gap:8px;margin:10px 0;flex-wrap:wrap;align-items:center}
+  .row>input[type=password],.row>textarea{flex:1;min-width:200px}
+  .item{display:flex;gap:8px;align-items:center;padding:8px;border:1px solid #333;border-radius:8px;margin:6px 0}
+  .item .n{width:28px;color:#888}
+  .item .name{flex:0 0 200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px;color:#aaa}
+  .item .title{flex:1;word-break:break-word}
+  .err{color:#ff6b6b}
+  small{color:#888}
+</style>
+</head>
+<body>
+<h2>🎬 Shorts Title Generator</h2>
+
+<div class="row">
+  <input type="password" id="key" placeholder="Gemini API key (aistudio.google.com)">
+  <button class="sec" id="saveKey">Save</button>
+</div>
+
+<div class="row">
+  <select id="model">
+    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+    <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+    <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+  </select>
+  <input type="file" id="files" accept="video/*" multiple>
+</div>
+
+<div class="row">
+  <textarea id="prompt" rows="3">Is YouTube Short ke liye ek catchy title do (max 60 characters). Sirf title likho, aur kuch nahi.</textarea>
+</div>
+
+<div class="row">
+  <button id="go">Generate Titles</button>
+  <button class="sec" id="copyAll">Copy All</button>
+  <button class="sec" id="csv">Download CSV</button>
+  <small>Max ~14MB per video (inline upload limit)</small>
+</div>
+
+<div id="list"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+let items = []; // {file, title, status}
+
+$('key').value = localStorage.getItem('gkey') || '';
+$('saveKey').onclick = () => { localStorage.setItem('gkey', $('key').value.trim()); alert('Saved in this browser only'); };
+
+$('files').onchange = e => {
+  items = [...e.target.files].map(f => ({file: f, title: '', status: ''}));
+  render();
+};
+
+function render() {
+  $('list').innerHTML = '';
+  items.forEach((it, i) => {
+    const d = document.createElement('div');
+    d.className = 'item';
+    d.innerHTML = `<span class="n">${i+1}</span>
+      <span class="name" title="${it.file.name}">${it.file.name}</span>
+      <span class="title ${it.status==='err'?'err':''}">${it.title || (it.status==='run'?'⏳ working...':'')}</span>`;
+    const up = btn('↑', () => move(i, -1));
+    const dn = btn('↓', () => move(i, 1));
+    const cp = btn('Copy', () => navigator.clipboard.writeText(it.title));
+    d.append(up, dn, cp);
+    $('list').appendChild(d);
+  });
+}
+function btn(t, fn) { const b = document.createElement('button'); b.className = 'sec'; b.textContent = t; b.onclick = fn; return b; }
+function move(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= items.length) return;
+  [items[i], items[j]] = [items[j], items[i]];
+  render();
+}
+
+const toB64 = file => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result.split(',')[1]);
+  r.onerror = rej;
+  r.readAsDataURL(file);
+});
+
+async function getTitle(file, key, model, prompt, tries = 3) {
+  if (file.size > 14 * 1024 * 1024) throw new Error('File >14MB, compress karo');
+  const data = await toB64(file);
+  const body = {contents: [{parts: [
+    {inline_data: {mime_type: file.type || 'video/mp4', data}},
+    {text: prompt}
+  ]}]};
+  for (let t = 0; t < tries; t++) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    if (r.status === 429 || r.status === 503) { await new Promise(s => setTimeout(s, 5000 * (t + 1))); continue; }
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error?.message || r.status);
+    return j.candidates?.[0]?.content?.parts?.map(p => p.text).join('').trim() || '(empty)';
+  }
+  throw new Error('Rate limit, thodi der baad try karo');
+}
+
+$('go').onclick = async () => {
+  const key = $('key').value.trim();
+  if (!key) return alert('API key daalo');
+  if (!items.length) return alert('Videos select karo');
+  $('go').disabled = true;
+  for (const it of items) {
+    it.status = 'run'; it.title = ''; render();
+    try {
+      it.title = await getTitle(it.file, key, $('model').value, $('prompt').value);
+      it.status = 'ok';
+    } catch (e) { it.title = 'ERROR: ' + e.message; it.status = 'err'; }
+    render();
+  }
+  $('go').disabled = false;
+};
+
+$('copyAll').onclick = () => {
+  const txt = items.map((it, i) => `${i+1}. ${it.title}`).join('\n');
+  navigator.clipboard.writeText(txt);
+};
+
+$('csv').onclick = () => {
+  const esc = s => `"${String(s).replace(/"/g, '""')}"`;
+  const rows = [['no', 'file', 'title'], ...items.map((it, i) => [i+1, it.file.name, it.title])];
+  const blob = new Blob([rows.map(r => r.map(esc).join(',')).join('\n')], {type: 'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'titles.csv';
+  a.click();
+};
+</script>
+</body>
+</html>
